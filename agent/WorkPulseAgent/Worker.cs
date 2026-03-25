@@ -49,20 +49,29 @@ namespace WorkPulseAgent
                         {
                             new { 
                                 type = "active_window", 
-                                title = activeWindow.Title, 
-                                process = activeWindow.ProcessName,
-                                browserUrl = activeWindow.BrowserUrl // Will be populated if it's a browser
+                                timestamp = DateTime.UtcNow.ToString("o"),
+                                details = new {
+                                    WindowTitle = activeWindow.Title, 
+                                    appName = activeWindow.ProcessName,
+                                    browserUrl = activeWindow.BrowserUrl
+                                }
                             },
                             new { 
                                 type = "activity_metrics", 
-                                idleTimeSeconds = idleTime, 
-                                activeTimeSeconds = activeTimeInWindow 
+                                timestamp = DateTime.UtcNow.ToString("o"),
+                                details = new {
+                                    idleTimeSeconds = idleTime, 
+                                    activeTimeSeconds = activeTimeInWindow 
+                                }
                             },
                             new {
                                 type = "location",
-                                lat = location.Latitude,
-                                lng = location.Longitude,
-                                city = location.City
+                                timestamp = DateTime.UtcNow.ToString("o"),
+                                details = new {
+                                    lat = location.Latitude,
+                                    lng = location.Longitude,
+                                    city = location.City
+                                }
                             }
                         }
                     };
