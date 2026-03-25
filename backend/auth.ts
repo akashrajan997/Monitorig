@@ -1,5 +1,6 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import db from './db';
 
 const router = express.Router();
@@ -7,6 +8,82 @@ const JWT_SECRET = process.env.JWT_SECRET || 'workpulse-super-secret-key-2026';
 
 // This URL is injected by AI Studio at runtime
 const APP_URL = process.env.APP_URL || 'http://localhost:3000';
+
+// ==========================================
+// PASSWORD AUTHENTICATION
+// ==========================================
+router.post('/register', async (req, res) => {
+  const { email, password, name } = req.body;
+
+  if (!email || !password || !name) {
+    return res.status(400).json({ error: 'Email, password, and name are required' });
+  }
+
+  try {
+    // Check if user already exists
+    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const passwordHash = await bcrypt.hash(password, salt);
+    const id = `local-${Date.now()}`;
+    const role = 'manager';
+
+    // Insert user
+    const stmt = db.prepare(`
+      INSERT INTO users (id, email, displayName, role, provider, passwordHash) 
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(id, email, name, role, 'local', passwordHash);
+
+    // Generate JWT
+    const token = jwt.sign({ uid: id, email, role }, JWT_SECRET, { expiresIn: '24h' });
+
+    res.json({ token, user: { id, email, name, role } });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+router.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    // Find user
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
+    
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check if user registered via OAuth but is trying to use password
+    if (!user.passwordHash && user.provider !== 'local') {
+      return res.status(401).json({ error: `Please sign in with ${user.provider}` });
+    }
+
+    // Verify password
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Generate JWT
+    const token = jwt.sign({ uid: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+
+    res.json({ token, user: { id: user.id, email: user.email, name: user.displayName, role: user.role } });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
 
 // ==========================================
 // GOOGLE OAUTH

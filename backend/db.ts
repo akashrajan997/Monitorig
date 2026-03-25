@@ -43,6 +43,13 @@ db.exec(`
   );
 `);
 
+// Add passwordHash column to users table if it doesn't exist (for existing databases)
+try {
+  db.exec("ALTER TABLE users ADD COLUMN passwordHash TEXT;");
+} catch (e) {
+  // Column already exists, ignore
+}
+
 // Insert default policy if it doesn't exist
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 insertSetting.run('global_policy', JSON.stringify({

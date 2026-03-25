@@ -7,7 +7,7 @@ import { Reporting } from './components/Reporting';
 import { UserManagement } from './components/UserManagement';
 import { SecurityLogs } from './components/SecurityLogs';
 import { Layout } from './components/Layout';
-import { LogIn, Activity } from 'lucide-react';
+import { LogIn, Activity, Mail, Lock, User as UserIcon } from 'lucide-react';
 import { User } from './types';
 
 export default function App() {
@@ -16,6 +16,14 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'dashboard' | 'employee' | 'guide' | 'policy' | 'reporting' | 'users' | 'security'>('dashboard');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
+  
+  // Auth state
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -51,6 +59,36 @@ export default function App() {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    setIsSubmitting(true);
+
+    try {
+      const endpoint = isRegistering ? '/api/auth/register' : '/api/auth/login';
+      const body = isRegistering ? { email, password, name } : { email, password };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Authentication failed');
+      }
+
+      localStorage.setItem('auth_token', data.token);
+      window.location.reload();
+    } catch (error: any) {
+      setAuthError(error.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const signInGoogle = async () => {
     try {
@@ -101,20 +139,102 @@ export default function App() {
             Enterprise-grade monitoring dashboard for Intune-deployed Windows agents. 
             Securely track employee productivity and system activity.
           </p>
+
+          {authError && (
+            <div className="mb-6 p-3 bg-red-50 border border-red-200 text-red-600 text-sm">
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleEmailAuth} className="space-y-4 mb-8">
+            {isRegistering && (
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-wider text-[#141414]/70 mb-2">Full Name</label>
+                <div className="relative">
+                  <UserIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#141414]/50" />
+                  <input
+                    type="text"
+                    required
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border border-[#141414]/20 focus:border-[#141414] outline-none text-sm"
+                    placeholder="John Doe"
+                  />
+                </div>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs font-mono uppercase tracking-wider text-[#141414]/70 mb-2">Email Address</label>
+              <div className="relative">
+                <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#141414]/50" />
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-[#141414]/20 focus:border-[#141414] outline-none text-sm"
+                  placeholder="admin@enterprise.local"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-mono uppercase tracking-wider text-[#141414]/70 mb-2">Password</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#141414]/50" />
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-[#141414]/20 focus:border-[#141414] outline-none text-sm"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full bg-[#141414] text-white py-3 px-4 hover:bg-[#141414]/90 transition-colors font-mono text-sm uppercase tracking-wider disabled:opacity-50"
+            >
+              {isSubmitting ? 'Processing...' : (isRegistering ? 'Create Account' : 'Sign In')}
+            </button>
+            <div className="text-center mt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRegistering(!isRegistering);
+                  setAuthError('');
+                }}
+                className="text-xs text-[#141414]/70 hover:text-[#141414] underline"
+              >
+                {isRegistering ? 'Already have an account? Sign in' : 'Need an account? Register'}
+              </button>
+            </div>
+          </form>
+
+          <div className="relative mb-8">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-[#141414]/20"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase tracking-widest font-mono">
+              <span className="bg-white px-2 text-[#141414]/50">Or continue with</span>
+            </div>
+          </div>
+
           <div className="space-y-4">
             <button
               onClick={signInGoogle}
-              className="w-full flex items-center justify-center gap-2 bg-[#141414] text-white py-3 px-4 hover:bg-[#141414]/90 transition-colors font-mono text-sm uppercase tracking-wider"
+              className="w-full flex items-center justify-center gap-2 bg-white text-[#141414] border border-[#141414] py-3 px-4 hover:bg-gray-50 transition-colors font-mono text-sm uppercase tracking-wider"
             >
               <LogIn className="w-4 h-4" />
-              Authenticate with Google
+              Google
             </button>
             <button
               onClick={signInMicrosoft}
               className="w-full flex items-center justify-center gap-2 bg-white text-[#141414] border border-[#141414] py-3 px-4 hover:bg-gray-50 transition-colors font-mono text-sm uppercase tracking-wider"
             >
               <LogIn className="w-4 h-4" />
-              Authenticate with Microsoft
+              Microsoft
             </button>
           </div>
           <div className="mt-8 pt-6 border-t border-[#141414]/10 flex items-center justify-between text-[10px] font-mono text-[#141414]/40 uppercase tracking-widest">
