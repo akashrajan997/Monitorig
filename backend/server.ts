@@ -2,21 +2,13 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
-import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, collection, addDoc } from 'firebase/firestore';
 import fs from 'fs';
 import AdmZip from 'adm-zip';
+import db from './db';
+import authRouter, { requireAuth } from './auth';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Load Firebase config for the server
-const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-
-// Initialize Firebase Client SDK
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
 async function startServer() {
   console.log(`[SERVER] Starting WorkPulse Enterprise Server...`);
@@ -26,38 +18,30 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Auth Routes
+  app.use('/api/auth', authRouter);
+
   // API Routes
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
-
-  // Policy Engine
-  const DEFAULT_POLICY = {
-    mode: "baseline",
-    modules: {
-      activityTracking: true,
-      urlTracking: true,
-      fileTracking: false,
-      screenshot: true
-    },
-    screenshotInterval: 300,
-    heartbeatInterval: 60
-  };
 
   // Agent Registration & Policy Fetch
   app.get("/api/v1/agent/policy", async (req, res) => {
     const deviceId = req.headers["x-device-id"];
     
     try {
-      const policyDoc = await getDoc(doc(db, 'settings', 'global_policy'));
-      if (policyDoc.exists()) {
-        res.json(policyDoc.data());
+      const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+      const row = stmt.get('global_policy') as { value: string } | undefined;
+      
+      if (row) {
+        res.json(JSON.parse(row.value));
       } else {
-        res.json(DEFAULT_POLICY);
+        res.status(404).json({ error: "Policy not found" });
       }
     } catch (error) {
       console.error('[POLICY FETCH ERROR]', error);
-      res.json(DEFAULT_POLICY);
+      res.status(500).json({ error: "Internal Server Error" });
     }
   });
 
@@ -67,51 +51,193 @@ async function startServer() {
     
     try {
       // 1. Update Employee/Device Record
-      const employeeRef = doc(db, 'employees', deviceId);
       const lastEvent = events.length > 0 ? events[events.length - 1] : null;
       const currentApp = lastEvent?.details?.WindowTitle || lastEvent?.details?.appName || 'Active';
       
-      await setDoc(employeeRef, {
-        id: deviceId,
-        name: `Device ${deviceId.substring(0, 8)}`,
-        email: `${deviceId}@enterprise.local`,
-        status: 'active',
-        lastSeen: new Date().toISOString(),
-        department: 'Remote Operations',
-        currentApp: currentApp,
-        agentSecret: 'workpulse-agent-secret-2026'
-      }, { merge: true });
+      const upsertEmployee = db.prepare(`
+        INSERT INTO employees (id, name, email, status, lastSeen, department, currentApp, agentSecret)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          lastSeen=excluded.lastSeen,
+          currentApp=excluded.currentApp
+      `);
+      
+      upsertEmployee.run(
+        deviceId, 
+        `Device ${deviceId.substring(0, 8)}`, 
+        `${deviceId}@enterprise.local`, 
+        'active', 
+        new Date().toISOString(), 
+        'Remote Operations', 
+        currentApp, 
+        'workpulse-agent-secret-2026'
+      );
 
       // 2. Store Events in Activity Logs
-      const logsRef = collection(db, 'activity_logs');
-      for (const event of events) {
-        const details = event.details || {};
-        // Map WindowTitle to appName for UI consistency if needed
-        if (details.WindowTitle && !details.appName) {
-          details.appName = details.WindowTitle;
-        }
-
-        // Clean undefined values from details
-        Object.keys(details).forEach(key => {
-          if (details[key] === undefined) {
-            delete details[key];
+      const insertLog = db.prepare(`
+        INSERT INTO activity_logs (employeeId, type, timestamp, details, agentSecret)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      
+      const insertMany = db.transaction((events) => {
+        for (const event of events) {
+          const details = event.details || {};
+          if (details.WindowTitle && !details.appName) {
+            details.appName = details.WindowTitle;
           }
-        });
-
-        await addDoc(logsRef, {
-          employeeId: deviceId,
-          type: event.type || 'unknown',
-          timestamp: event.timestamp || new Date().toISOString(),
-          details: details,
-          agentSecret: 'workpulse-agent-secret-2026'
-        });
-      }
+          Object.keys(details).forEach(key => {
+            if (details[key] === undefined) {
+              delete details[key];
+            }
+          });
+          
+          insertLog.run(
+            deviceId,
+            event.type || 'unknown',
+            event.timestamp || new Date().toISOString(),
+            JSON.stringify(details),
+            'workpulse-agent-secret-2026'
+          );
+        }
+      });
+      
+      insertMany(events);
 
       console.log(`[INGEST] Processed ${events.length} events from ${deviceId}`);
       res.status(202).json({ status: "accepted", serverTime: new Date().toISOString() });
     } catch (error: any) {
       console.error('[INGEST ERROR]', error);
       res.status(500).json({ error: "Internal Server Error", details: error.message, stack: error.stack });
+    }
+  });
+
+  // Frontend API Routes (Protected)
+  app.get("/api/users/me", requireAuth, (req: any, res) => {
+    try {
+      const stmt = db.prepare('SELECT id as uid, email, displayName, role FROM users WHERE id = ?');
+      const user = stmt.get(req.user.uid);
+      if (user) {
+        res.json(user);
+      } else {
+        res.status(404).json({ error: "User not found" });
+      }
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/users", requireAuth, (req, res) => {
+    try {
+      const stmt = db.prepare('SELECT id as uid, email, displayName, role FROM users');
+      const users = stmt.all();
+      res.json(users);
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.put("/api/users/:uid/role", requireAuth, (req, res) => {
+    try {
+      const { uid } = req.params;
+      const { role } = req.body;
+      const stmt = db.prepare('UPDATE users SET role = ? WHERE id = ?');
+      stmt.run(role, uid);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.delete("/api/users/:uid", requireAuth, (req, res) => {
+    try {
+      const { uid } = req.params;
+      const stmt = db.prepare('DELETE FROM users WHERE id = ?');
+      stmt.run(uid);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/employees", requireAuth, (req, res) => {
+    try {
+      const stmt = db.prepare('SELECT * FROM employees ORDER BY lastSeen DESC');
+      const employees = stmt.all();
+      res.json(employees);
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/activity_logs", requireAuth, (req, res) => {
+    try {
+      const stmt = db.prepare('SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 100');
+      const logs = stmt.all().map((log: any) => ({
+        ...log,
+        details: JSON.parse(log.details)
+      }));
+      res.json(logs);
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/security_logs", requireAuth, (req, res) => {
+    try {
+      // For demo purposes, returning mock security logs
+      res.json([
+        {
+          id: '1',
+          timestamp: new Date().toISOString(),
+          type: 'auth_success',
+          severity: 'low',
+          details: { message: 'Admin login successful', ip: '192.168.1.100' }
+        }
+      ]);
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/policy", requireAuth, (req, res) => {
+    try {
+      const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+      const result = stmt.get('global_policy') as any;
+      if (result) {
+        res.json(JSON.parse(result.value));
+      } else {
+        res.status(404).json({ error: "Policy not found" });
+      }
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.post("/api/policy", requireAuth, (req, res) => {
+    try {
+      const policy = req.body;
+      const stmt = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
+      stmt.run(JSON.stringify(policy), 'global_policy');
+      
+      // Log security event
+      const logStmt = db.prepare(`
+        INSERT INTO activity_logs (id, employeeId, type, timestamp, details)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      logStmt.run(
+        `policy_${Date.now()}`,
+        'system',
+        'policy_change',
+        new Date().toISOString(),
+        JSON.stringify({
+          message: `Global monitoring policy updated to ${policy.mode} mode`,
+          policy: policy
+        })
+      );
+
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
     }
   });
 
