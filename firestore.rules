@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: users
+    // Document ID: uid
+    // Fields: uid, email, displayName, role
+    //
+    // Collection: employees
+    // Document ID: employeeId
+    // Fields: id, name, email, department, status, lastSeen, currentApp
+    //
+    // Collection: activity_logs
+    // Document ID: auto-generated
+    // Fields: employeeId, timestamp, type, details
+    // ===============================================================
+
+    // Collection: security_logs
+    // Document ID: auto-generated
+    // Fields: timestamp, type, severity, details
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         request.auth.token.email == "unnikunnoth28@gmail.com");
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    // Validation Functions
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.role in ['admin', 'manager'];
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll(['id', 'name', 'email']) &&
+             data.id is string &&
+             data.name is string &&
+             data.email is string;
+    }
+
+    function isValidLog(data) {
+      return data.keys().hasAll(['employeeId', 'timestamp', 'type']) &&
+             data.employeeId is string &&
+             data.type in ['app_switch', 'idle_start', 'idle_end', 'heartbeat'];
+    }
+
+    function isValidSecurityLog(data) {
+      return data.keys().hasAll(['timestamp', 'type', 'severity', 'details']) &&
+             data.type in ['auth_success', 'auth_failure', 'policy_change', 'agent_alert', 'unauthorized_access'] &&
+             data.severity in ['low', 'medium', 'high', 'critical'];
+    }
+
+    // Rules
+    match /users/{uid} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(uid) && isValidUser(request.resource.data) && (request.resource.data.role == 'manager' || request.auth.token.email == "unnikunnoth28@gmail.com");
+      allow update: if (isOwner(uid) && request.resource.data.role == resource.data.role) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    function isAgent() {
+      return request.resource.data.agentSecret == 'workpulse-agent-secret-2026';
+    }
+
+    match /employees/{employeeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isAgent();
+    }
+
+    match /activity_logs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() || isAgent();
+      allow update, delete: if isAdmin();
+    }
+
+    match /security_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if true; // System or agents can log security events
+      allow update, delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}
